@@ -1,0 +1,16 @@
+/bin/
+/web/node_modules/
+/web/dist/
+
+# 本机密钥与运行时，任何情况下都不进代码仓
+.local/
+.run/
+*.key
+
+# 数据仓独立 Git（shopmind-data），整目录不进代码仓
+/data/
+
+.DS_Store
+.idea/
+.vscode/
+*.code-workspace
