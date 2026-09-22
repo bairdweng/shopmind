@@ -3,13 +3,16 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"shopmind/internal/agent"
+	"shopmind/internal/clip"
 	"shopmind/internal/config"
+	"shopmind/internal/gitsync"
 	"shopmind/internal/vault"
 )
 
@@ -48,6 +51,73 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/vault/unlock", s.handleVaultUnlock)
 	s.mux.HandleFunc("/api/settings", s.requireUnlock(s.handleSettings))
 	s.mux.HandleFunc("/api/setup/cursor", s.requireUnlock(s.handleSetupCursor))
+	s.mux.HandleFunc("/api/git", s.requireUnlock(s.handleGit))
+	s.mux.HandleFunc("/api/clip/env", s.requireUnlock(s.handleClipEnv))
+	s.mux.HandleFunc("/api/clip/text2srt", s.requireUnlock(s.handleClipText2SRT))
+}
+
+func (s *Server) handleClipEnv(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, clip.CheckEnv())
+}
+
+func (s *Server) handleClipText2SRT(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if err := r.ParseMultipartForm(512 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "解析上传失败: " + err.Error()})
+		return
+	}
+	file, _, err := r.FormFile("audio")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少音频文件"})
+		return
+	}
+	defer file.Close()
+
+	suffix := ".mp3"
+	if fh := r.MultipartForm.File["audio"]; len(fh) > 0 && filepath.Ext(fh[0].Filename) != "" {
+		suffix = strings.ToLower(filepath.Ext(fh[0].Filename))
+	}
+	tmp, err := os.CreateTemp("", "shopmind-audio-*"+suffix)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	audioPath := tmp.Name()
+	defer os.Remove(audioPath)
+	if _, err := io.Copy(tmp, file); err != nil {
+		tmp.Close()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存音频失败: " + err.Error()})
+		return
+	}
+	tmp.Close()
+
+	text := strings.TrimSpace(r.FormValue("text"))
+	language := strings.TrimSpace(r.FormValue("language"))
+	if language == "" {
+		language = "zh"
+	}
+
+	srt, output, err := clip.TextToSRT(r.Context(), audioPath, text, language)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":     false,
+			"error":  err.Error(),
+			"output": output,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":     true,
+		"srt":    srt,
+		"output": output,
+	})
 }
 
 func (s *Server) requireUnlock(next http.HandlerFunc) http.HandlerFunc {
@@ -207,6 +277,59 @@ func (s *Server) handleSetupCursor(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "action required: install | test"})
 		}
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) handleGit(w http.ResponseWriter, r *http.Request) {
+	action := strings.TrimSpace(r.URL.Query().Get("action"))
+	switch r.Method {
+	case http.MethodGet:
+		if action != "" && action != "status" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown action"})
+			return
+		}
+		writeJSON(w, http.StatusOK, gitsync.Check(r.Context()))
+	case http.MethodPost:
+		var (
+			out string
+			err error
+		)
+		switch action {
+		case "init":
+			out, err = gitsync.InitRepo(r.Context())
+		case "set_remote":
+			var req struct {
+				URL string `json:"url"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			out, err = gitsync.SetRemote(r.Context(), req.URL)
+		case "push":
+			out, err = gitsync.PushForce(r.Context())
+		case "overwrite":
+			out, err = gitsync.OverwriteLocal(r.Context())
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "action required: init | set_remote | push | overwrite"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":     false,
+				"output": out,
+				"error":  err.Error(),
+				"status": gitsync.Check(r.Context()),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":     true,
+			"output": out,
+			"status": gitsync.Check(r.Context()),
+		})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}

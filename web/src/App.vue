@@ -33,6 +33,7 @@
     <el-aside class="aside" width="188px">
       <div class="brand" @click="$router.push('/')">ShopMind</div>
       <el-menu :default-active="activeMenu" class="aside-menu" router>
+        <el-menu-item index="/clip">剪辑助手</el-menu-item>
         <el-menu-item index="/">工作台</el-menu-item>
         <el-menu-item index="/settings">设置</el-menu-item>
       </el-menu>
@@ -56,7 +57,11 @@ const password = ref('')
 const password2 = ref('')
 const gating = ref(false)
 
-const activeMenu = computed(() => (route.path.startsWith('/settings') ? '/settings' : '/'))
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/settings')) return '/settings'
+  if (route.path.startsWith('/clip')) return '/clip'
+  return '/'
+})
 
 async function loadHealth() {
   bootError.value = ''

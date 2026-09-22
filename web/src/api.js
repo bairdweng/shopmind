@@ -53,5 +53,26 @@ export const api = {
     request('/api/setup/cursor?action=test', {
       method: 'POST',
       timeoutMs: 120000
+    }),
+  gitStatus: () => request('/api/git', { timeoutMs: 120000 }),
+  gitInit: () =>
+    request('/api/git?action=init', { method: 'POST', timeoutMs: 120000 }),
+  gitSetRemote: (url) =>
+    request('/api/git?action=set_remote', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+      timeoutMs: 120000
+    }),
+  gitPushForce: () =>
+    request('/api/git?action=push', { method: 'POST', timeoutMs: 300000 }),
+  gitOverwrite: () =>
+    request('/api/git?action=overwrite', { method: 'POST', timeoutMs: 300000 }),
+  clipEnv: () => request('/api/clip/env'),
+  clipText2SRT: (formData) =>
+    request('/api/clip/text2srt', {
+      method: 'POST',
+      body: formData,
+      headers: {},
+      timeoutMs: 900000
     })
 }

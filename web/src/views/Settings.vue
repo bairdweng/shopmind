@@ -74,11 +74,98 @@
       </el-card>
     </el-col>
   </el-row>
+
+  <el-row :gutter="16" style="margin-top: 16px">
+    <el-col :span="24">
+      <el-card>
+        <template #header>Git 数据同步（data/）</template>
+        <el-alert
+          v-if="git?.git_missing"
+          type="error"
+          title="未检测到 git 命令，请先安装 git"
+          show-icon
+          :closable="false"
+        />
+        <el-form label-width="140px" @submit.prevent>
+          <el-form-item label="远端仓库地址">
+            <el-input
+              v-model="gitRemoteInput"
+              :placeholder="git?.remote || '例如 git@github.com:you/shopmind-data.git'"
+              clearable
+            />
+            <div class="hint">
+              数据目录 data/（加密后的保险库）通过独立 Git 仓同步；master.key 等本机密钥在 .local/，永不进仓。
+              在 GitHub 建一个私有空仓库，把地址填到上面。
+            </div>
+          </el-form-item>
+          <el-form-item>
+            <el-space wrap>
+              <el-button
+                type="primary"
+                @click="saveRemote"
+                :loading="gitBusy === 'remote'"
+                :disabled="git?.git_missing"
+              >
+                保存远端并初始化
+              </el-button>
+              <el-button @click="loadGit" :loading="gitBusy === 'status'" :disabled="git?.git_missing">
+                刷新状态
+              </el-button>
+              <el-button
+                type="warning"
+                @click="pushForce"
+                :loading="gitBusy === 'push'"
+                :disabled="git?.git_missing || !git?.is_repo || !git?.remote"
+              >
+                本地 → 远端（push -f 覆盖）
+              </el-button>
+              <el-button
+                type="danger"
+                @click="overwriteLocal"
+                :loading="gitBusy === 'overwrite'"
+                :disabled="git?.git_missing || !git?.is_repo || !git?.remote"
+              >
+                远端 → 本地（覆盖）
+              </el-button>
+            </el-space>
+          </el-form-item>
+        </el-form>
+
+        <el-descriptions v-if="git" :column="2" border>
+          <el-descriptions-item label="数据仓">
+            <el-tag :type="git.is_repo ? 'success' : 'info'">
+              {{ git.is_repo ? '已初始化' : '未初始化' }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="分支">{{ git.branch || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="本地改动">
+            {{ git.changed ? `${git.changed} 项未提交` : '干净' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="与远端">
+            <template v-if="git.ahead === null || git.ahead === undefined">待检查</template>
+            <template v-else>
+              领先 {{ git.ahead }} / 落后 {{ git.behind }}
+            </template>
+          </el-descriptions-item>
+          <el-descriptions-item label="最新提交" :span="2">
+            <span class="mono">{{ git.last_commit || '—' }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <div class="hint" style="margin-top: 8px">
+          覆盖是双向强制的：推送会以本地覆盖远端，拉取会丢弃本地未提交内容并重置为远端。
+          拉取覆盖后保险库文件已更换，建议刷新页面重新解锁。
+        </div>
+
+        <pre v-if="gitLog" class="mono" style="margin-top: 12px">{{ gitLog }}</pre>
+      </el-card>
+    </el-col>
+  </el-row>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 
 const settings = ref(null)
@@ -90,6 +177,11 @@ const installing = ref(false)
 const testing = ref(false)
 const logOutput = ref('')
 const apiKeyTouched = ref(false)
+
+const git = ref(null)
+const gitRemoteInput = ref('')
+const gitLog = ref('')
+const gitBusy = ref('')
 
 const form = ref({
   cursor_api_key: '',
@@ -117,6 +209,95 @@ async function loadAll() {
     apiKeyTouched.value = false
   } catch (e) {
     loadError.value = e.message
+  }
+  loadGit()
+}
+
+async function loadGit() {
+  gitBusy.value = 'status'
+  try {
+    git.value = await api.gitStatus()
+    gitRemoteInput.value = git.value?.remote || ''
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    gitBusy.value = ''
+  }
+}
+
+async function saveRemote() {
+  const url = gitRemoteInput.value.trim()
+  if (!url && git.value?.is_repo) {
+    ElMessage.warning('请填写远端仓库地址')
+    return
+  }
+  gitBusy.value = 'remote'
+  gitLog.value = ''
+  try {
+    const res = url ? await api.gitSetRemote(url) : await api.gitInit()
+    git.value = res.status
+    gitLog.value = res.output || ''
+    ElMessage.success(url ? '远端已保存' : '数据仓已初始化')
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    gitBusy.value = ''
+  }
+}
+
+async function pushForce() {
+  try {
+    await ElMessageBox.confirm(
+      '将以本地数据强制覆盖远端仓库（push -f），远端上的新提交会被覆盖。继续？',
+      '本地 → 远端',
+      { type: 'warning', confirmButtonText: '强制推送', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  gitBusy.value = 'push'
+  gitLog.value = ''
+  try {
+    const res = await api.gitPushForce()
+    git.value = res.status
+    gitLog.value = res.output || ''
+    if (res.ok) {
+      ElMessage.success('已推送到远端')
+    } else {
+      ElMessage.warning(res.error || '推送未完成，请查看输出')
+    }
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    gitBusy.value = ''
+  }
+}
+
+async function overwriteLocal() {
+  try {
+    await ElMessageBox.confirm(
+      '将丢弃本地未提交内容，用远端数据覆盖本地（reset --hard + clean）。覆盖后建议刷新页面重新解锁保险库。继续？',
+      '远端 → 本地',
+      { type: 'warning', confirmButtonText: '覆盖本地', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  gitBusy.value = 'overwrite'
+  gitLog.value = ''
+  try {
+    const res = await api.gitOverwrite()
+    git.value = res.status
+    gitLog.value = res.output || ''
+    if (res.ok) {
+      ElMessage.success('已用远端覆盖本地')
+    } else {
+      ElMessage.warning(res.error || '覆盖未完成，请查看输出')
+    }
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    gitBusy.value = ''
   }
 }
 
