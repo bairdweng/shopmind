@@ -67,9 +67,9 @@ export const api = {
     request('/api/git?action=push', { method: 'POST', timeoutMs: 300000 }),
   gitOverwrite: () =>
     request('/api/git?action=overwrite', { method: 'POST', timeoutMs: 300000 }),
-  clipEnv: () => request('/api/clip/env'),
-  clipText2SRT: (formData) =>
-    request('/api/clip/text2srt', {
+  clipTools: () => request('/api/clip/tools', { timeoutMs: 120000 }),
+  clipRun: (id, formData) =>
+    request(`/api/clip/tools/${id}/run`, {
       method: 'POST',
       body: formData,
       headers: {},

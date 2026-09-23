@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -52,59 +51,46 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/settings", s.requireUnlock(s.handleSettings))
 	s.mux.HandleFunc("/api/setup/cursor", s.requireUnlock(s.handleSetupCursor))
 	s.mux.HandleFunc("/api/git", s.requireUnlock(s.handleGit))
-	s.mux.HandleFunc("/api/clip/env", s.requireUnlock(s.handleClipEnv))
-	s.mux.HandleFunc("/api/clip/text2srt", s.requireUnlock(s.handleClipText2SRT))
+	s.mux.HandleFunc("GET /api/clip/tools", s.requireUnlock(s.handleClipTools))
+	s.mux.HandleFunc("POST /api/clip/tools/{id}/run", s.requireUnlock(s.handleClipRun))
 }
 
-func (s *Server) handleClipEnv(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
+// handleClipTools 返回所有已注册剪辑工具及其环境就绪状态。
+func (s *Server) handleClipTools(w http.ResponseWriter, r *http.Request) {
+	type item struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Ready       bool   `json:"ready"`
+		EnvMessage  string `json:"env_message"`
 	}
-	writeJSON(w, http.StatusOK, clip.CheckEnv())
+	list := make([]item, 0, 8)
+	for _, t := range clip.ListTools() {
+		env := t.CheckEnv()
+		list = append(list, item{
+			ID:          t.ID(),
+			Name:        t.Name(),
+			Description: t.Description(),
+			Ready:       env.Ready,
+			EnvMessage:  env.Message,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"tools": list})
 }
 
-func (s *Server) handleClipText2SRT(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+// handleClipRun 统一的工具执行入口，按 {id} 分发到对应插件。
+func (s *Server) handleClipRun(w http.ResponseWriter, r *http.Request) {
+	tool := clip.GetTool(r.PathValue("id"))
+	if tool == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "未知工具"})
 		return
 	}
+	// 统一解析 multipart，插件内直接用 r.FormFile / r.FormValue 取输入。
 	if err := r.ParseMultipartForm(512 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "解析上传失败: " + err.Error()})
 		return
 	}
-	file, _, err := r.FormFile("audio")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少音频文件"})
-		return
-	}
-	defer file.Close()
-
-	suffix := ".mp3"
-	if fh := r.MultipartForm.File["audio"]; len(fh) > 0 && filepath.Ext(fh[0].Filename) != "" {
-		suffix = strings.ToLower(filepath.Ext(fh[0].Filename))
-	}
-	tmp, err := os.CreateTemp("", "shopmind-audio-*"+suffix)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	audioPath := tmp.Name()
-	defer os.Remove(audioPath)
-	if _, err := io.Copy(tmp, file); err != nil {
-		tmp.Close()
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存音频失败: " + err.Error()})
-		return
-	}
-	tmp.Close()
-
-	text := strings.TrimSpace(r.FormValue("text"))
-	language := strings.TrimSpace(r.FormValue("language"))
-	if language == "" {
-		language = "zh"
-	}
-
-	srt, output, err := clip.TextToSRT(r.Context(), audioPath, text, language)
+	result, output, err := tool.Run(r.Context(), r)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"ok":     false,
@@ -113,11 +99,11 @@ func (s *Server) handleClipText2SRT(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":     true,
-		"srt":    srt,
-		"output": output,
-	})
+	resp := map[string]interface{}{"ok": true, "output": output}
+	for k, v := range result {
+		resp[k] = v
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) requireUnlock(next http.HandlerFunc) http.HandlerFunc {

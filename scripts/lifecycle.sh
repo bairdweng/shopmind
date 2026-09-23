@@ -132,6 +132,9 @@ cmd_start() {
   fi
 
   log "启动工作台…"
+  # 默认走 HuggingFace 国内镜像，避免首次下载对齐模型时在官方源卡死；
+  # 显式设置了 HF_ENDPOINT 则尊重用户选择。
+  export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
   nohup "${ROOT}/bin/shopmind" serve --port "${PORT}" >>"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
   disown -h "$!" 2>/dev/null || true
